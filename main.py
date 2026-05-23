@@ -14,15 +14,18 @@ from googleapiclient.discovery import build
 
 SCOPES = ["https://www.googleapis.com/auth/youtube.force-ssl"]
 
-# Ortam Değişkenleri (Render üzerinden çekiliyor)
-GROQ_API_KEY = os.environ.get("GROQ_API_KEY")
-YOUTUBE_CHANNEL_ID = os.environ.get("YOUTUBE_CHANNEL_ID")
+# Bütün ortam değişkenlerini temizleyip (boşlukları silip) bir sözlüğe alıyoruz
+env_clean = {k.strip().upper(): v.strip() for k, v in os.environ.items() if v}
+
+# Ortam Değişkenleri
+GROQ_API_KEY = env_clean.get("GROQ_API_KEY")
+YOUTUBE_CHANNEL_ID = env_clean.get("YOUTUBE_CHANNEL_ID")
 CHECK_INTERVAL = 600
 LAST_VIDEO_FILE = "last_video.txt"
 
-# Render'a girdiğin ham JSON metinleri
-TOKEN_JSON_STR = os.environ.get("TOKEN_JSON")
-CLIENT_SECRETS_JSON_STR = os.environ.get("CLIENT_SECRETS_JSON")
+# Esnek JSON yakalama (boşluklu veya hatalı yazımlara karşı korumalı)
+TOKEN_JSON_STR = env_clean.get("TOKEN_JSON")
+CLIENT_SECRETS_JSON_STR = env_clean.get("CLIENT_SECRETS_JSON")
 
 groq_client = Groq(api_key=GROQ_API_KEY)
 
@@ -34,15 +37,14 @@ def home():
 
 def authenticate():
     if not TOKEN_JSON_STR or not CLIENT_SECRETS_JSON_STR:
-        print("HATA: Render üzerindeki TOKEN_JSON veya CLIENT_SECRETS_JSON değişkenleri eksik!")
+        print("HATA: Render üzerindeki TOKEN_JSON veya CLIENT_SECRETS_JSON değişkenleri bulunamadı!")
+        print("Mevcut algılanan temiz anahtarlar:", list(env_clean.keys()))
         return None
 
     try:
-        # Render'a girdiğin metinleri Python sözlüğüne çeviriyoruz
         token_data = json.loads(TOKEN_JSON_STR)
         client_data = json.loads(CLIENT_SECRETS_JSON_STR)
         
-        # client_secrets içinden id ve secret'ı cımbızlıyoruz
         client_id = client_data.get("installed", {}).get("client_id")
         client_secret = client_data.get("installed", {}).get("client_secret")
 
@@ -57,10 +59,9 @@ def authenticate():
             scopes=SCOPES
         )
     except Exception as e:
-        print(f"HATA: JSON verileri çözülürken hata oluştu: {e}")
+        print(f"HATA: JSON verileri parse edilirken hata oluştu: {e}")
         return None
 
-    # Eğer token'ın süresi dolmuşsa arka planda sessizce yeniler
     if not creds.valid:
         if creds.expired and creds.refresh_token:
             try:
@@ -213,7 +214,7 @@ def auto_comment_loop(youtube):
 
     while True:
         try:
-            print(f"\n[{time.strftime('%H:%M:%S')}] Hasan'ın kanalı kontrol ediliyor...")
+            print(f"\n[{time.strftime('%H:%M:%S')}] Kanal kontrol ediliyor...")
             video_id, title, description, thumbnail_url = get_latest_video(youtube, YOUTUBE_CHANNEL_ID)
 
             if video_id and video_id != last_commented_video_id:
