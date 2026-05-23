@@ -1,0 +1,6 @@
+token.json
+client_secrets.json
+last_video.txt
+__pycache__/
+*.pyc
+.env
