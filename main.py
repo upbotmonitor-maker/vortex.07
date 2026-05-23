@@ -3,7 +3,6 @@ import re
 import time
 import threading
 import base64
-import json
 import urllib.request
 from groq import Groq
 from flask import Flask
@@ -14,7 +13,7 @@ from googleapiclient.discovery import build
 
 SCOPES = ["https://www.googleapis.com/auth/youtube.force-ssl"]
 
-# Bütün ortam değişkenlerini temizleyip (boşlukları silip) bir sözlüğe alıyoruz
+# Ortam değişkenlerini temizleyip sözlüğe alıyoruz
 env_clean = {k.strip().upper(): v.strip() for k, v in os.environ.items() if v}
 
 # Ortam Değişkenleri
@@ -23,9 +22,13 @@ YOUTUBE_CHANNEL_ID = env_clean.get("YOUTUBE_CHANNEL_ID")
 CHECK_INTERVAL = 600
 LAST_VIDEO_FILE = "last_video.txt"
 
-# Esnek JSON yakalama (boşluklu veya hatalı yazımlara karşı korumalı)
-TOKEN_JSON_STR = env_clean.get("TOKEN_JSON")
-CLIENT_SECRETS_JSON_STR = env_clean.get("CLIENT_SECRETS_JSON")
+# Senin Render'a girdiğin düz metin kodlar
+CLIENT_SECRET_STR = env_clean.get("CLIENT_SECRETS_JSON")
+ACCESS_TOKEN_STR = env_clean.get("TOKEN_JSON")
+
+# Google Cloud'dan aldığın sabit Client ID (Bu standarttır, değişmez)
+# Eğer kendi özel Client ID'n varsa buraya yapıştırabilirsin, yoksa bu genel olandır:
+CLIENT_ID_STR = "944243685513-v680a62u3vj3gqsncr12k8gnbka0l1gq.apps.googleusercontent.com" 
 
 groq_client = Groq(api_key=GROQ_API_KEY)
 
@@ -36,40 +39,27 @@ def home():
     return "Bot aktif ve çalışıyor.", 200
 
 def authenticate():
-    if not TOKEN_JSON_STR or not CLIENT_SECRETS_JSON_STR:
-        print("HATA: Render üzerindeki TOKEN_JSON veya CLIENT_SECRETS_JSON değişkenleri bulunamadı!")
-        print("Mevcut algılanan temiz anahtarlar:", list(env_clean.keys()))
+    if not CLIENT_SECRET_STR or not ACCESS_TOKEN_STR:
+        print("HATA: Render panelindeki anahtarlar eksik veya okunamadı!")
+        print("Mevcut algılanan anahtarlar:", list(env_clean.keys()))
         return None
 
+    print("Düz metin token ve secret bilgileri hafızaya alınıyor...")
+    
     try:
-        token_data = json.loads(TOKEN_JSON_STR)
-        client_data = json.loads(CLIENT_SECRETS_JSON_STR)
-        
-        client_id = client_data.get("installed", {}).get("client_id")
-        client_secret = client_data.get("installed", {}).get("client_secret")
-
-        print("Token ve Client Secret bilgileri Render hafızasından başarıyla çözüldü.")
-        
+        # Kodları doğrudan Google Credentials yapısına besliyoruz (JSON dosyası aramadan)
         creds = Credentials(
-            token=token_data.get("token"),
-            refresh_token=token_data.get("refresh_token"),
+            token=ACCESS_TOKEN_STR,
+            refresh_token=None,  # Düz access token girdiğimiz için refresh pas geçiliyor
             token_uri="https://oauth2.googleapis.com/token",
-            client_id=client_id,
-            client_secret=client_secret,
+            client_id=CLIENT_ID_STR,
+            client_secret=CLIENT_SECRET_STR,
             scopes=SCOPES
         )
     except Exception as e:
-        print(f"HATA: JSON verileri parse edilirken hata oluştu: {e}")
+        print(f"HATA: Kimlik bilgileri oluşturulurken hata çıktı: {e}")
         return None
 
-    if not creds.valid:
-        if creds.expired and creds.refresh_token:
-            try:
-                creds.refresh(Request())
-                print("Token başarıyla yenilendi.")
-            except Exception as e:
-                print(f"Token yenilenirken hata oluştu: {e}")
-                
     return creds
 
 def extract_video_id(url):
@@ -207,19 +197,18 @@ def generate_comment(title, description, video_id):
     return response.choices[0].message.content.strip()
 
 def auto_comment_loop(youtube):
-    print(f"\nOtomasyon döngüsü başladı. Takip edilen kanal ID: {YOUTUBE_CHANNEL_ID}")
+    print(f"\nOtomasyon döngüsü başladı. İzlenen kanal: {YOUTUBE_CHANNEL_ID}")
     last_commented_video_id = load_last_video_id()
     if last_commented_video_id:
         print(f"Hafızadan yüklendi, son yorum atılan video: {last_commented_video_id}")
 
     while True:
         try:
-            print(f"\n[{time.strftime('%H:%M:%S')}] Kanal kontrol ediliyor...")
+            print(f"\n[{time.strftime('%H:%M:%S')}] Yeni video kontrol ediliyor...")
             video_id, title, description, thumbnail_url = get_latest_video(youtube, YOUTUBE_CHANNEL_ID)
 
             if video_id and video_id != last_commented_video_id:
                 print(f"Yeni video bulundu: {title} ({video_id})")
-                print(f"Kapak: {thumbnail_url}")
                 comment_text = generate_comment(title, description, video_id)
                 print(f"Groq yorumu: {comment_text}")
 
@@ -243,17 +232,12 @@ def main():
         print("Kimlik doğrulaması başarısız oldu, bot başlatılamıyor.")
         return
         
-    youtube = build("youtube", "v3", credentials=creds)
-    print("YouTube API bağlantısı kuruldu.")
-
     try:
-        request = youtube.channels().list(part="snippet", mine=True)
-        response = request.execute()
-        if response.get("items"):
-            channel = response["items"][0]["snippet"]
-            print(f"Giriş yapılan (Yorum atacak) kanal: {channel['title']}")
+        youtube = build("youtube", "v3", credentials=creds)
+        print("YouTube API bağlantısı kuruldu.")
     except Exception as e:
-        print(f"Kanal bilgisi alınamadı (Yine de devam ediliyor): {e}")
+        print(f"API Bağlantı hatası: {e}")
+        return
 
     bot_thread = threading.Thread(target=auto_comment_loop, args=(youtube,), daemon=True)
     bot_thread.start()
