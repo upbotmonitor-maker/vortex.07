@@ -20,6 +20,11 @@ YOUTUBE_CHANNEL_ID = os.environ.get("YOUTUBE_CHANNEL_ID")
 CHECK_INTERVAL = 600
 LAST_VIDEO_FILE = "last_video.txt"
 
+client_secrets_env = os.environ.get("CLIENT_SECRETS_JSON")
+if client_secrets_env and not os.path.exists(CLIENT_SECRETS_FILE):
+    with open(CLIENT_SECRETS_FILE, "w") as f:
+        f.write(client_secrets_env)
+
 groq_client = Groq(api_key=GROQ_API_KEY)
 
 app = Flask(__name__)
