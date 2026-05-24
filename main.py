@@ -51,19 +51,24 @@ def authenticate():
 
     if access_token and client_secret:
         print("Render env var'larından kimlik bilgileri okundu.")
+        refresh_token = os.environ.get("REFRESH_TOKEN", "").strip() or None
         creds = Credentials(
             token=access_token,
+            refresh_token=refresh_token,
             token_uri=TOKEN_URI,
             client_id=CLIENT_ID,
             client_secret=client_secret,
             scopes=SCOPES
         )
-        if creds.expired:
-            try:
-                creds.refresh(Request())
-                print("Access token yenilendi.")
-            except Exception as e:
-                print(f"Token yenileme başarısız: {e}")
+        if creds.expired or not creds.valid:
+            if refresh_token:
+                try:
+                    creds.refresh(Request())
+                    print("Access token otomatik yenilendi.")
+                except Exception as e:
+                    print(f"Token yenileme başarısız: {e}")
+            else:
+                print("Uyarı: REFRESH_TOKEN bulunamadı, token süresi dolunca bot durabilir.")
         return creds
 
     if os.path.exists(TOKEN_FILE):
