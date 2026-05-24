@@ -20,7 +20,6 @@ GROQ_API_KEY      = os.environ.get("GROQ_API_KEY")
 YOUTUBE_CHANNEL_ID = os.environ.get("YOUTUBE_CHANNEL_ID")
 CHECK_INTERVAL    = 600
 
-CLIENT_ID = "944243685513-v680a62u3vj3gqsncr12k8gnbka0l1gq.apps.googleusercontent.com"
 TOKEN_URI = "https://oauth2.googleapis.com/token"
 
 groq_client = Groq(api_key=GROQ_API_KEY)
@@ -48,15 +47,17 @@ def get_env_client_secret():
 def authenticate():
     access_token    = get_env_token()
     client_secret   = get_env_client_secret()
+    client_id       = (os.environ.get("CLIENT_ID") or "").strip() or None
 
-    if access_token and client_secret:
+    if access_token and client_secret and client_id:
         print("Render env var'larından kimlik bilgileri okundu.")
+        print(f"Client ID: {client_id[:30]}...")
         refresh_token = os.environ.get("REFRESH_TOKEN", "").strip() or None
         creds = Credentials(
             token=access_token,
             refresh_token=refresh_token,
             token_uri=TOKEN_URI,
-            client_id=CLIENT_ID,
+            client_id=client_id,
             client_secret=client_secret,
             scopes=SCOPES
         )
