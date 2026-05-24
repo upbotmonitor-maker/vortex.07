@@ -6,29 +6,22 @@ import base64
 import urllib.request
 from groq import Groq
 from flask import Flask
-from google_auth_oauthlib.flow import Flow
 from google.auth.transport.requests import Request
 from google.oauth2.credentials import Credentials
+from google_auth_oauthlib.flow import Flow
 from googleapiclient.discovery import build
 
 SCOPES = ["https://www.googleapis.com/auth/youtube.force-ssl"]
-
-# Ortam değişkenlerini temizleyip sözlüğe alıyoruz
-env_clean = {k.strip().upper(): v.strip() for k, v in os.environ.items() if v}
-
-# Ortam Değişkenleri
-GROQ_API_KEY = env_clean.get("GROQ_API_KEY")
-YOUTUBE_CHANNEL_ID = env_clean.get("YOUTUBE_CHANNEL_ID")
-CHECK_INTERVAL = 600
+CLIENT_SECRETS_FILE = "client_secrets.json"
+TOKEN_FILE = "token.json"
 LAST_VIDEO_FILE = "last_video.txt"
 
-# Senin Render'a girdiğin düz metin kodlar
-CLIENT_SECRET_STR = env_clean.get("CLIENT_SECRETS_JSON")
-ACCESS_TOKEN_STR = env_clean.get("TOKEN_JSON")
+GROQ_API_KEY      = os.environ.get("GROQ_API_KEY")
+YOUTUBE_CHANNEL_ID = os.environ.get("YOUTUBE_CHANNEL_ID")
+CHECK_INTERVAL    = 600
 
-# Google Cloud'dan aldığın sabit Client ID (Bu standarttır, değişmez)
-# Eğer kendi özel Client ID'n varsa buraya yapıştırabilirsin, yoksa bu genel olandır:
-CLIENT_ID_STR = "944243685513-v680a62u3vj3gqsncr12k8gnbka0l1gq.apps.googleusercontent.com" 
+CLIENT_ID = "944243685513-v680a62u3vj3gqsncr12k8gnbka0l1gq.apps.googleusercontent.com"
+TOKEN_URI = "https://oauth2.googleapis.com/token"
 
 groq_client = Groq(api_key=GROQ_API_KEY)
 
@@ -38,28 +31,69 @@ app = Flask(__name__)
 def home():
     return "Bot aktif ve çalışıyor.", 200
 
-def authenticate():
-    if not CLIENT_SECRET_STR or not ACCESS_TOKEN_STR:
-        print("HATA: Render panelindeki anahtarlar eksik veya okunamadı!")
-        print("Mevcut algılanan anahtarlar:", list(env_clean.keys()))
-        return None
+def get_env_token():
+    for key in ("TOKEN-JSON", "TOKEN_JSON"):
+        val = os.environ.get(key, "").strip()
+        if val:
+            return val
+    return None
 
-    print("Düz metin token ve secret bilgileri hafızaya alınıyor...")
-    
-    try:
-        # Kodları doğrudan Google Credentials yapısına besliyoruz (JSON dosyası aramadan)
+def get_env_client_secret():
+    for key in ("CLIENT_SECRETS_JSON", "CLIENT-SECRETS-JSON"):
+        val = os.environ.get(key, "").strip()
+        if val:
+            return val
+    return None
+
+def authenticate():
+    access_token    = get_env_token()
+    client_secret   = get_env_client_secret()
+
+    if access_token and client_secret:
+        print("Render env var'larından kimlik bilgileri okundu.")
         creds = Credentials(
-            token=ACCESS_TOKEN_STR,
-            refresh_token=None,  # Düz access token girdiğimiz için refresh pas geçiliyor
-            token_uri="https://oauth2.googleapis.com/token",
-            client_id=CLIENT_ID_STR,
-            client_secret=CLIENT_SECRET_STR,
+            token=access_token,
+            token_uri=TOKEN_URI,
+            client_id=CLIENT_ID,
+            client_secret=client_secret,
             scopes=SCOPES
         )
-    except Exception as e:
-        print(f"HATA: Kimlik bilgileri oluşturulurken hata çıktı: {e}")
-        return None
+        if creds.expired:
+            try:
+                creds.refresh(Request())
+                print("Access token yenilendi.")
+            except Exception as e:
+                print(f"Token yenileme başarısız: {e}")
+        return creds
 
+    if os.path.exists(TOKEN_FILE):
+        print("Yerel token.json dosyasından giriş yapılıyor...")
+        creds = Credentials.from_authorized_user_file(TOKEN_FILE, SCOPES)
+        if not creds.valid:
+            if creds.expired and creds.refresh_token:
+                creds.refresh(Request())
+                print("Token yenilendi.")
+                with open(TOKEN_FILE, "w") as f:
+                    f.write(creds.to_json())
+        return creds
+
+    print("\n--- GOOGLE GİRİŞİ ---")
+    flow = Flow.from_client_secrets_file(
+        CLIENT_SECRETS_FILE,
+        scopes=SCOPES,
+        redirect_uri="urn:ietf:wg:oauth:2.0:oob"
+    )
+    auth_url, _ = flow.authorization_url(prompt="consent")
+    print("Aşağıdaki linke tıkla ve Google hesabınla giriş yap:\n")
+    print(auth_url)
+    print("\nGiriş yaptıktan sonra sana gösterilen kodu buraya yapıştır:")
+    code = input("Kod: ").strip()
+    flow.fetch_token(code=code)
+    creds = flow.credentials
+    print("Giriş başarılı.")
+    with open(TOKEN_FILE, "w") as f:
+        f.write(creds.to_json())
+    print(f"Token '{TOKEN_FILE}' dosyasına kaydedildi.")
     return creds
 
 def extract_video_id(url):
@@ -92,8 +126,7 @@ def get_thumbnail_base64(video_id):
     for url in urls:
         try:
             with urllib.request.urlopen(url, timeout=10) as response:
-                data = response.read()
-                return base64.b64encode(data).decode("utf-8")
+                return base64.b64encode(response.read()).decode("utf-8")
         except Exception:
             continue
     return None
@@ -103,21 +136,17 @@ def comment_on_video(youtube, video_url, comment_text):
     if not video_id:
         print("Hata: Geçerli bir YouTube video URL'si girilemedi.")
         return
-
-    request = youtube.commentThreads().insert(
+    response = youtube.commentThreads().insert(
         part="snippet",
         body={
             "snippet": {
                 "videoId": video_id,
                 "topLevelComment": {
-                    "snippet": {
-                        "textOriginal": comment_text
-                    }
+                    "snippet": {"textOriginal": comment_text}
                 }
             }
         }
-    )
-    response = request.execute()
+    ).execute()
     comment_id = response["snippet"]["topLevelComment"]["id"]
     print(f"\nYorum başarıyla gönderildi!")
     print(f"Video ID : {video_id}")
@@ -125,23 +154,23 @@ def comment_on_video(youtube, video_url, comment_text):
     print(f"Yorum    : {comment_text}")
 
 def get_latest_video(youtube, channel_id):
-    request = youtube.search().list(
+    response = youtube.search().list(
         part="snippet",
         channelId=channel_id,
         order="date",
         type="video",
         maxResults=1
-    )
-    response = request.execute()
+    ).execute()
     items = response.get("items", [])
     if not items:
         return None, None, None, None
     item = items[0]
-    video_id = item["id"]["videoId"]
-    title = item["snippet"]["title"]
-    description = item["snippet"]["description"]
-    thumbnail_url = item["snippet"]["thumbnails"].get("high", {}).get("url", "")
-    return video_id, title, description, thumbnail_url
+    return (
+        item["id"]["videoId"],
+        item["snippet"]["title"],
+        item["snippet"]["description"],
+        item["snippet"]["thumbnails"].get("high", {}).get("url", "")
+    )
 
 def generate_comment(title, description, video_id):
     thumbnail_b64 = get_thumbnail_base64(video_id)
@@ -158,23 +187,13 @@ def generate_comment(title, description, video_id):
 
     if thumbnail_b64:
         print("Kapak fotoğrafı alındı, vision modeli kullanılıyor...")
-        messages = [
-            {
-                "role": "user",
-                "content": [
-                    {
-                        "type": "text",
-                        "text": base_prompt
-                    },
-                    {
-                        "type": "image_url",
-                        "image_url": {
-                            "url": f"data:image/jpeg;base64,{thumbnail_b64}"
-                        }
-                    }
-                ]
-            }
-        ]
+        messages = [{
+            "role": "user",
+            "content": [
+                {"type": "text", "text": base_prompt},
+                {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{thumbnail_b64}"}}
+            ]
+        }]
         response = groq_client.chat.completions.create(
             model="meta-llama/llama-4-scout-17b-16e-instruct",
             messages=messages,
@@ -182,12 +201,7 @@ def generate_comment(title, description, video_id):
         )
     else:
         print("Kapak fotoğrafı alınamadı, metin modeli kullanılıyor...")
-        messages = [
-            {
-                "role": "user",
-                "content": base_prompt
-            }
-        ]
+        messages = [{"role": "user", "content": base_prompt}]
         response = groq_client.chat.completions.create(
             model="llama-3.3-70b-versatile",
             messages=messages,
@@ -197,30 +211,28 @@ def generate_comment(title, description, video_id):
     return response.choices[0].message.content.strip()
 
 def auto_comment_loop(youtube):
-    print(f"\nOtomasyon döngüsü başladı. İzlenen kanal: {YOUTUBE_CHANNEL_ID}")
+    print(f"\nOtomasyon döngüsü başladı. Kanal: {YOUTUBE_CHANNEL_ID}")
     last_commented_video_id = load_last_video_id()
     if last_commented_video_id:
-        print(f"Hafızadan yüklendi, son yorum atılan video: {last_commented_video_id}")
+        print(f"Hafızadan yüklendi, son video: {last_commented_video_id}")
 
     while True:
         try:
-            print(f"\n[{time.strftime('%H:%M:%S')}] Yeni video kontrol ediliyor...")
+            print(f"\n[{time.strftime('%H:%M:%S')}] Kanal kontrol ediliyor...")
             video_id, title, description, thumbnail_url = get_latest_video(youtube, YOUTUBE_CHANNEL_ID)
 
             if video_id and video_id != last_commented_video_id:
-                print(f"Yeni video bulundu: {title} ({video_id})")
+                print(f"Yeni video: {title} ({video_id})")
                 comment_text = generate_comment(title, description, video_id)
                 print(f"Groq yorumu: {comment_text}")
-
-                video_url = f"https://www.youtube.com/watch?v={video_id}"
-                comment_on_video(youtube, video_url, comment_text)
+                comment_on_video(youtube, f"https://www.youtube.com/watch?v={video_id}", comment_text)
                 last_commented_video_id = video_id
                 save_last_video_id(video_id)
             else:
                 print("Yeni video yok, bekleniyor...")
 
         except Exception as e:
-            print(f"Döngü hatası: {e}")
+            print(f"Hata: {e}")
 
         print(f"{CHECK_INTERVAL // 60} dakika sonra tekrar kontrol edilecek...")
         time.sleep(CHECK_INTERVAL)
@@ -228,19 +240,14 @@ def auto_comment_loop(youtube):
 def main():
     print("Bot başlatılıyor...")
     creds = authenticate()
-    if not creds:
-        print("Kimlik doğrulaması başarısız oldu, bot başlatılamıyor.")
-        return
-        
-    try:
-        youtube = build("youtube", "v3", credentials=creds)
-        print("YouTube API bağlantısı kuruldu.")
-    except Exception as e:
-        print(f"API Bağlantı hatası: {e}")
-        return
+    youtube = build("youtube", "v3", credentials=creds)
+    print("YouTube API bağlantısı kuruldu.")
 
-    bot_thread = threading.Thread(target=auto_comment_loop, args=(youtube,), daemon=True)
-    bot_thread.start()
+    response = youtube.channels().list(part="snippet", mine=True).execute()
+    if response.get("items"):
+        print(f"Giriş yapılan kanal: {response['items'][0]['snippet']['title']}")
+
+    threading.Thread(target=auto_comment_loop, args=(youtube,), daemon=True).start()
 
     print("\nFlask sunucusu başlatılıyor (port 5000)...")
     app.run(host="0.0.0.0", port=5000)
