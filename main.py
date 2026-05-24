@@ -4,6 +4,7 @@ import time
 import threading
 import base64
 import urllib.request
+from datetime import datetime, timezone, timedelta
 from groq import Groq
 from flask import Flask
 from google.auth.transport.requests import Request
@@ -169,13 +170,14 @@ def get_latest_video(youtube, channel_id):
     ).execute()
     items = response.get("items", [])
     if not items:
-        return None, None, None, None
+        return None, None, None, None, None
     item = items[0]
     return (
         item["id"]["videoId"],
         item["snippet"]["title"],
         item["snippet"]["description"],
-        item["snippet"]["thumbnails"].get("high", {}).get("url", "")
+        item["snippet"]["thumbnails"].get("high", {}).get("url", ""),
+        item["snippet"]["publishedAt"]
     )
 
 def generate_comment(title, description, video_id):
@@ -216,26 +218,36 @@ def generate_comment(title, description, video_id):
 
     return response.choices[0].message.content.strip()
 
+FRESH_VIDEO_MINUTES = 15
+
+def is_video_fresh(published_at_str):
+    published_at = datetime.strptime(published_at_str, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
+    age = datetime.now(timezone.utc) - published_at
+    return age <= timedelta(minutes=FRESH_VIDEO_MINUTES)
+
 def auto_comment_loop(youtube):
     print(f"\nOtomasyon döngüsü başladı. Kanal: {YOUTUBE_CHANNEL_ID}")
-    last_commented_video_id = load_last_video_id()
-    if last_commented_video_id:
-        print(f"Hafızadan yüklendi, son video: {last_commented_video_id}")
+    commented_video_ids = set()
 
     while True:
         try:
             print(f"\n[{time.strftime('%H:%M:%S')}] Kanal kontrol ediliyor...")
-            video_id, title, description, thumbnail_url = get_latest_video(youtube, YOUTUBE_CHANNEL_ID)
+            video_id, title, description, thumbnail_url, published_at = get_latest_video(youtube, YOUTUBE_CHANNEL_ID)
 
-            if video_id and video_id != last_commented_video_id:
-                print(f"Yeni video: {title} ({video_id})")
+            if not video_id:
+                print("Video bulunamadı.")
+            elif video_id in commented_video_ids:
+                print(f"Bu videoya zaten yorum atıldı, atlıyorum: {video_id}")
+            elif not is_video_fresh(published_at):
+                published_dt = datetime.strptime(published_at, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
+                age_min = int((datetime.now(timezone.utc) - published_dt).total_seconds() / 60)
+                print(f"Video eski ({age_min} dakika önce yüklenmiş), yorum atılmıyor.")
+            else:
+                print(f"Taze video bulundu ({published_at}): {title}")
                 comment_text = generate_comment(title, description, video_id)
                 print(f"Groq yorumu: {comment_text}")
                 comment_on_video(youtube, f"https://www.youtube.com/watch?v={video_id}", comment_text)
-                last_commented_video_id = video_id
-                save_last_video_id(video_id)
-            else:
-                print("Yeni video yok, bekleniyor...")
+                commented_video_ids.add(video_id)
 
         except Exception as e:
             print(f"Hata: {e}")
